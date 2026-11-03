@@ -1,0 +1,17 @@
+# Documentation PDFs
+*.pdf
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# Claude Code
+.claude/
+
+# macOS
+.DS_Store
