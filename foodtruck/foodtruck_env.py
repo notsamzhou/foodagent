@@ -5,11 +5,11 @@ from typing import Dict, List, Optional, Tuple
 import gymnasium as gym
 import numpy as np
 
-from config import EnvConfig
-from dynamics import expected_demand, init_preferences, init_prices, sample_orders, update_prices
-from formatting import format_observation
-from parser import ParsedCommand, parse_command
-from recipes import build_ingredient_catalog, build_recipe_book
+from foodtruck.config import EnvConfig
+from foodtruck.dynamics import expected_demand, init_preferences, init_prices, sample_orders, update_prices
+from foodtruck.formatting import format_observation
+from foodtruck.parser import ParsedCommand, parse_command
+from foodtruck.recipes import build_ingredient_catalog, build_recipe_book
 
 
 class FoodTruckEnv(gym.Env):

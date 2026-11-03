@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from config import EnvConfig
-from foodtruck_env import FoodTruckEnv
+from foodtruck import EnvConfig, FoodTruckEnv
 
 
 def main() -> None:
