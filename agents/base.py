@@ -10,6 +10,9 @@ from foodtruck import EnvConfig, FoodTruckEnv
 # Used when the LLM gives us nothing usable. It's harmless and gives the LLM fresh info next time.
 FALLBACK_ACTION = "check storage"
 
+# Max tokens the LLM can generate per call.
+MAX_RESPONSE_TOKENS = 16000
+
 # One pattern per command the environment accepts (see README "Action commands").
 ACTION_PATTERNS = [
     r"check (storage|market|recipes|menu)",
@@ -62,16 +65,35 @@ Rules:
 - The result of a check only appears in the observation right after that check."""
 
 
-def clean_actions(actions: List[str]) -> List[str]:
-    """Normalize the LLM's actions and drop any that don't match a command pattern."""
+def clean_actions(actions: List[str], config: EnvConfig) -> List[str]:
+    """Normalize the LLM's actions and drop any that don't match a command pattern or break a rule."""
     valid = []
     for action in actions:
         action = " ".join(action.strip().lower().split())
-        if any(re.fullmatch(pattern, action) for pattern in ACTION_PATTERNS):
-            valid.append(action)
-        else:
+        if not any(re.fullmatch(pattern, action) for pattern in ACTION_PATTERNS):
             print(f"[agent] dropping invalid action: {action!r}")
+        elif not within_limits(action, config):
+            print(f"[agent] dropping action that breaks the rules: {action!r}")
+        else:
+            valid.append(action)
     return valid
+
+
+def within_limits(action: str, config: EnvConfig) -> bool:
+    """Check the numbers in an action against the rules in describe_game."""
+    tokens = action.split()
+    if tokens[0] == "buy":
+        return 1 <= int(tokens[2]) <= config.max_buy_qty
+    if tokens[0] == "trash":
+        return 1 <= int(tokens[2]) <= config.max_trash_qty
+    if tokens[0] in ("set", "clear") and not 1 <= int(tokens[2]) <= config.max_menu_items:
+        return False
+    if tokens[0] == "set":
+        price = float(tokens[4])
+        steps = round((price - config.price_min) / config.price_step)
+        on_grid = abs(config.price_min + steps * config.price_step - price) <= 1e-6
+        return config.price_min <= price <= config.price_max and on_grid
+    return True
 
 
 def get_day(observation: str) -> Optional[int]:

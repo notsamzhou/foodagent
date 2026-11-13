@@ -124,12 +124,12 @@ You can also pass the key directly with `--api-key "<YOUR_KEY>"`.
 - `--model`: defaults to `claude-haiku-5-5`
 - `--max-steps`: safety cap on environment steps (default 400)
 - `--max-history-tokens`: transcript budget sent to the model each step (default 32000). Oldest transcript entries are dropped when over budget.
-- `--max-response-tokens`: cap tokens generated per LLM call, including thinking (default 16000)
 
 ### How the agent works
 
 - Each day the agent first asks the LLM for its check commands. After the checks run, it makes one more LLM call for the rest of the day's actions, ending with `end prep`.
-- The LLM replies with JSON (`{"actions": [...]}`). Each action is checked against the command formats, and invalid ones are dropped.
+- Recipes are checked once on day 1. The agent keeps the result and shows it above the transcript in every LLM call.
+- The LLM replies with JSON (`{"actions": [...]}`). Each action is checked against the command formats and the game's limits (quantities, menu slots, price range and step), and invalid ones are dropped.
 - `act()` returns one queued action per step. If the day ends early (prep ops run out), leftover actions are discarded.
 
 ### Notes
@@ -145,7 +145,7 @@ Same setup as the simple agent. Run it with:
 uv run --env-file .env python -m agents.team_agent --seed 1
 ```
 
-Flags: `--model`, `--seed`, `--max-steps`, and `--max-response-tokens` (per LLM call), with the same defaults as the simple agent.
+Flags: `--model`, `--seed`, and `--max-steps`, with the same defaults as the simple agent.
 
 ### How the team agent works
 
@@ -153,8 +153,8 @@ Each day:
 
 1. The code runs `check storage`, `check market`, and `check menu`. `check recipes` runs only on day 1, and the result is reused after that.
 2. **Checker** (LLM): reads the check results and the log of past days, and writes a report with observations and ideas. It sends no commands.
-3. **Menu setter** (LLM): reads the report, the check results, the log, and the list of recipes not tried yet. Returns `set menu` / `clear menu` commands and notes for the buyer with expected orders per dish.
-4. **Buyer** (LLM): reads the menu decision and notes, the check results, the report, and the log. Returns `buy` / `trash` commands, limited to the prep ops left.
+3. **Menu setter** (LLM): reads the report, the check results, the log, and the list of recipes not tried yet. Returns `set menu` / `clear menu` commands, limited to the prep ops left, and notes for the buyer with expected orders per dish.
+4. **Buyer** (LLM): reads the menu decision and notes, the check results, the report, and the log. Returns `buy` / `trash` commands, limited to the prep ops left after the menu commands.
 5. The code sends the menu commands, then the buy commands, then `end prep`.
 
 Each agent can only send its own kind of command; others are dropped. The log of past days has, for each day, the starting menu, market prices, every command with its result, and the daily summary.
@@ -162,7 +162,7 @@ Each agent can only send its own kind of command; others are dropped. The log of
 ## Adding a new agent
 
 1. Create a file in `agents/`, e.g. `agents/my_agent.py`.
-2. Subclass `Agent` from `agents.base` and implement `act(observation) -> str`. `agents/base.py` also has shared helpers: `describe_game`, `clean_actions`, `get_day`, and `run_episode`.
+2. Subclass `Agent` from `agents.base` and implement `act(observation) -> str`. `agents/base.py` also has shared helpers: `describe_game`, `clean_actions`, `get_day`, and `run_episode`, and the `MAX_RESPONSE_TOKENS` limit for LLM calls.
 3. Add a `main()` that calls `run_episode` (see `agents/simple_llm_agent.py`), then run it with `uv run python -m agents.my_agent`.
 4. Add tests in `tests/`, e.g. `tests/test_my_agent.py`.
 

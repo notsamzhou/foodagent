@@ -8,7 +8,15 @@ import anthropic
 import pydantic
 from pydantic import BaseModel
 
-from agents.base import FALLBACK_ACTION, Agent, clean_actions, describe_game, get_day, run_episode
+from agents.base import (
+    FALLBACK_ACTION,
+    MAX_RESPONSE_TOKENS,
+    Agent,
+    clean_actions,
+    describe_game,
+    get_day,
+    run_episode,
+)
 from foodtruck import EnvConfig, FoodTruckEnv
 
 
@@ -20,9 +28,23 @@ def build_system_prompt(config: EnvConfig) -> str:
     return f"""You run a food truck. {describe_game(config)}
 
 How to respond:
-- At the start of each day, you should probably check everything first (storage, market, recipes, menu). Respond with only those check commands.
+- At the start of each day, you should probably check storage, market, and menu first. Recipes never change, so check them only on day 1. After that they are shown above the transcript. Respond with only those check commands.
 - After you see the check results, respond with all your actions for the rest of the day in one list, ending with `end prep`.
 - Respond with a JSON object like {{"actions": ["check storage", "check market"]}}. Each action is one command."""
+
+
+def recipes_section(observation: str) -> Optional[str]:
+    """The 'Recipes:' section of an observation, or None if it has none."""
+    lines = observation.splitlines()
+    if "Recipes:" not in lines:
+        return None
+    start = lines.index("Recipes:")
+    section = [lines[start]]
+    for line in lines[start + 1 :]:
+        if not line.startswith("- "):
+            break
+        section.append(line)
+    return "\n".join(section)
 
 
 class SimpleLLMAgent(Agent):
@@ -30,22 +52,23 @@ class SimpleLLMAgent(Agent):
         self,
         client: anthropic.Anthropic,
         model: str,
-        system_prompt: str,
+        config: EnvConfig,
         max_history_tokens: int,
-        max_response_tokens: int,
     ) -> None:
         self.client = client
         self.model = model
-        self.system_prompt = system_prompt
+        self.config = config
+        self.system_prompt = build_system_prompt(config)
         self.max_history_tokens = max_history_tokens
-        self.max_response_tokens = max_response_tokens
 
         self.transcript: List[str] = []  # alternating observation and action entries, oldest first
+        self.recipes_text: Optional[str] = None  # recipes from the last recipe check
         self.queue: List[str] = []  # planned actions not yet sent to the env
         self.queue_day: Optional[int] = None  # the day the queued actions were planned for
 
     def act(self, observation: str) -> str:
         self.transcript.append(f"Observation:\n{observation}")
+        self.recipes_text = recipes_section(observation) or self.recipes_text
 
         # If a new day started (e.g. prep ops ran out), the old plan no longer applies.
         day = get_day(observation)
@@ -66,7 +89,7 @@ class SimpleLLMAgent(Agent):
         try:
             response = self.client.messages.parse(
                 model=self.model,
-                max_tokens=self.max_response_tokens,
+                max_tokens=MAX_RESPONSE_TOKENS,
                 system=self.system_prompt,
                 messages=self._messages(),
                 output_format=DayPlan,
@@ -81,11 +104,13 @@ class SimpleLLMAgent(Agent):
             print(f"[agent] no plan in LLM response (stop_reason: {response.stop_reason})")
             return [FALLBACK_ACTION]
 
-        return clean_actions(plan.actions) or [FALLBACK_ACTION]
+        return clean_actions(plan.actions, self.config) or [FALLBACK_ACTION]
 
     def _messages(self) -> List[dict]:
         transcript = "\n\n".join(self.transcript)
         content = f"Transcript so far (oldest first):\n\n{transcript}\n\nWhat are your next actions?"
+        if self.recipes_text:
+            content = f"{self.recipes_text}\n\n{content}"
         return [{"role": "user", "content": content}]
 
     def _count_tokens(self) -> int:
@@ -131,12 +156,6 @@ def main() -> int:
         default=32000,
         help="Max tokens for transcript history.",
     )
-    parser.add_argument(
-        "--max-response-tokens",
-        type=int,
-        default=16000,
-        help="Max tokens to generate for the action.",
-    )
     args = parser.parse_args()
     if not args.api_key:
         parser.error("No API key found. Set ANTHROPIC_API_KEY in .env or pass --api-key.")
@@ -145,9 +164,8 @@ def main() -> int:
     agent = SimpleLLMAgent(
         client=anthropic.Anthropic(api_key=args.api_key),
         model=args.model,
-        system_prompt=build_system_prompt(config),
+        config=config,
         max_history_tokens=args.max_history_tokens,
-        max_response_tokens=args.max_response_tokens,
     )
     run_episode(FoodTruckEnv(config), agent, seed=args.seed, max_steps=args.max_steps)
     return 0

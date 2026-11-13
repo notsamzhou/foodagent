@@ -3,13 +3,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import List, Optional
 
-from agents.simple_llm_agent import (
-    FALLBACK_ACTION,
-    DayPlan,
-    SimpleLLMAgent,
-    build_system_prompt,
-    clean_actions,
-)
+from agents.base import FALLBACK_ACTION, clean_actions
+from agents.simple_llm_agent import DayPlan, SimpleLLMAgent, build_system_prompt
 from foodtruck import EnvConfig, FoodTruckEnv
 
 CHECKS = ["check storage", "check market", "check recipes", "check menu"]
@@ -37,9 +32,8 @@ def make_agent(plans: List[Optional[List[str]]], max_history_tokens: int = 32000
     return SimpleLLMAgent(
         client=SimpleNamespace(messages=FakeMessages(plans)),
         model="test-model",
-        system_prompt=build_system_prompt(EnvConfig()),
+        config=EnvConfig(),
         max_history_tokens=max_history_tokens,
-        max_response_tokens=1000,
     )
 
 
@@ -59,8 +53,16 @@ def test_clean_actions_keeps_valid_and_drops_invalid() -> None:
         "buy tomato",
         "sell tomato 3",
         "I will buy tomatoes",
+        "buy tomato 0",
+        "buy tomato 11",
+        "trash tomato 11",
+        "set menu 5 veggie_wrap 7.5",
+        "clear menu 0",
+        "set menu 1 veggie_wrap 7.3",
+        "set menu 1 veggie_wrap 25",
+        "set menu 1 veggie_wrap 0",
     ]
-    assert clean_actions(actions) == [
+    assert clean_actions(actions, EnvConfig()) == [
         "check market",
         "buy tomato 3",
         "set menu 1 veggie_wrap 7.5",
@@ -96,6 +98,25 @@ def test_checks_then_one_call_for_rest_of_day() -> None:
     assert "Daily summary:" in third_prompt
     assert "Last action: Bought 3 tomato" in third_prompt
     assert "Last action: Set menu slot 1 to veggie_wrap" in third_prompt
+
+
+def test_recipes_stay_in_prompt_after_transcript_is_trimmed() -> None:
+    env = FoodTruckEnv(EnvConfig())
+    obs, _ = env.reset(seed=0)
+    agent = make_agent([["check recipes"], ["check storage"], ["check storage"]])
+    messages = agent.client.messages
+
+    obs = run_steps(agent, env, obs, 1)
+    assert not messages.parse_calls[0]["messages"][0]["content"].startswith("Recipes:")
+
+    # Simulate the recipe check being trimmed out of the transcript.
+    obs = run_steps(agent, env, obs, 1)
+    agent.transcript.clear()
+    agent.act(obs)
+
+    prompt = messages.parse_calls[2]["messages"][0]["content"]
+    assert prompt.startswith("Recipes:\n- 1. veggie_wrap:")
+    assert "Transcript so far" in prompt
 
 
 def test_leftover_plan_is_dropped_when_day_ends_early() -> None:

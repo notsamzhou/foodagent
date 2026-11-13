@@ -9,7 +9,7 @@ import anthropic
 import pydantic
 from pydantic import BaseModel
 
-from agents.base import Agent, clean_actions, describe_game, get_day, run_episode
+from agents.base import MAX_RESPONSE_TOKENS, Agent, clean_actions, describe_game, get_day, run_episode
 from foodtruck import EnvConfig, FoodTruckEnv
 
 
@@ -118,12 +118,10 @@ class TeamAgent(Agent):
         client: anthropic.Anthropic,
         model: str,
         config: EnvConfig,
-        max_response_tokens: int,
     ) -> None:
         self.client = client
         self.model = model
         self.config = config
-        self.max_response_tokens = max_response_tokens
 
         self.log: List[str] = []  # one entry per finished day, oldest first
         self.recipes_text: Optional[str] = None  # recipes never change, so they are only checked once
@@ -191,7 +189,7 @@ class TeamAgent(Agent):
         self.results = []
         self.planned = False
         self.ops_used = 0
-        self.queue =["check storage", "check market", "check menu"]
+        self.queue = ["check storage", "check market", "check menu"]
         if self.recipes_text is None:
             self.queue.append("check recipes")
 
@@ -214,11 +212,12 @@ class TeamAgent(Agent):
             f"Checker's report:\n{checker_report}\n\nDecide today's menu.",
             MenuDecision,
         )
-        menu_actions = self._keep(decision.actions if decision else [], ("set menu", "clear menu"))
+        max_actions = self.config.max_prep_ops_per_day - self.ops_used - 1  # one op is left for end prep
+        menu_actions = self._keep(decision.actions if decision else [], ("set menu", "clear menu"))[:max_actions]
         notes = decision.notes_for_buyer if decision else "(the menu setter gave no notes; the menu stays as it is)"
         print(f"\n[menu setter] {menu_actions}\n{notes}")
 
-        max_buy_actions = max(self.config.max_prep_ops_per_day - self.ops_used - len(menu_actions) - 1, 0)
+        max_buy_actions = max(max_actions - len(menu_actions), 0)
         menu_text = "\n".join(f"- {a}" for a in menu_actions) or "- (none, the menu stays as it is)"
         plan = self._ask(
             build_buyer_prompt(self.config),
@@ -236,7 +235,7 @@ class TeamAgent(Agent):
     def _keep(self, actions: List[str], prefixes: tuple) -> List[str]:
         """Clean the actions and keep only the commands this agent is allowed to send."""
         kept = []
-        for action in clean_actions(actions):
+        for action in clean_actions(actions, self.config):
             if action.startswith(prefixes):
                 kept.append(action)
             else:
@@ -265,7 +264,7 @@ class TeamAgent(Agent):
         try:
             response = self.client.messages.parse(
                 model=self.model,
-                max_tokens=self.max_response_tokens,
+                max_tokens=MAX_RESPONSE_TOKENS,
                 system=system,
                 messages=[{"role": "user", "content": content}],
                 output_format=output_format,
@@ -289,12 +288,6 @@ def main() -> int:
     parser.add_argument("--model", default="claude-haiku-5-5", help="Anthropic model name.")
     parser.add_argument("--seed", type=int, default=1, help="RNG seed for env reset.")
     parser.add_argument("--max-steps", type=int, default=400, help="Safety cap on steps.")
-    parser.add_argument(
-        "--max-response-tokens",
-        type=int,
-        default=16000,
-        help="Max tokens to generate per LLM call.",
-    )
     args = parser.parse_args()
     if not args.api_key:
         parser.error("No API key found. Set ANTHROPIC_API_KEY in .env or pass --api-key.")
@@ -304,7 +297,6 @@ def main() -> int:
         client=anthropic.Anthropic(api_key=args.api_key),
         model=args.model,
         config=config,
-        max_response_tokens=args.max_response_tokens,
     )
     run_episode(FoodTruckEnv(config), agent, seed=args.seed, max_steps=args.max_steps)
     return 0

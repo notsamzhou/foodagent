@@ -48,7 +48,6 @@ def make_agent(checker=None, menu=None, buyer=None) -> TeamAgent:
         client=SimpleNamespace(messages=FakeMessages(responses)),
         model="test-model",
         config=EnvConfig(),
-        max_response_tokens=1000,
     )
 
 
@@ -208,6 +207,19 @@ def test_out_of_role_and_extra_actions_are_dropped() -> None:
     assert sent == DAY_1_CHECKS + ["set menu 1 veggie_wrap 7.5"] + ["buy tomato 1"] * 14 + ["end prep"]
 
 
+def test_menu_actions_are_capped_to_prep_ops_left() -> None:
+    env = FoodTruckEnv(EnvConfig())
+    obs, _ = env.reset(seed=0)
+    agent = make_agent(menu=[MenuDecision(actions=["clear menu 1"] * 30, notes_for_buyer="")])
+
+    obs, sent = run_day(agent, env, obs)
+
+    # 20 ops - 4 checks - end prep leaves 15 for the menu, and none for the buyer.
+    assert sent == DAY_1_CHECKS + ["clear menu 1"] * 15 + ["end prep"]
+    assert "at most 0 commands" in agent.client.messages.prompt(2)
+    assert "Last action: Ended prep" in obs
+
+
 def test_day_still_ends_when_llms_give_nothing() -> None:
     env = FoodTruckEnv(EnvConfig())
     obs, _ = env.reset(seed=0)
@@ -224,5 +236,5 @@ def test_day_still_ends_when_llms_give_nothing() -> None:
 def test_system_prompts_hide_customer_model() -> None:
     for build in [build_checker_prompt, build_menu_setter_prompt, build_buyer_prompt]:
         prompt = build(EnvConfig()).lower()
-        for hidden in ["elasticity", "weekday", "multiplier","base demand", "preference", "mean reversion"]:
+        for hidden in ["elasticity", "weekday", "multiplier", "base demand", "preference", "mean reversion"]:
             assert hidden not in prompt
