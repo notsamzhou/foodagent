@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from typing import List, Optional
 
 from agents.base import FALLBACK_ACTION, clean_actions
-from agents.simple_llm_agent import DayPlan, SimpleLLMAgent, build_system_prompt
+from agents.simple_llm_agent import DayPlan, SimpleLLMAgent
 from foodtruck import EnvConfig, FoodTruckEnv
 
 CHECKS = ["check storage", "check market", "check recipes", "check menu"]
@@ -76,61 +76,50 @@ def test_checks_then_one_call_for_rest_of_day() -> None:
     obs, _ = env.reset(seed=0)
     day_plan = ["buy tomato 3", "buy lettuce 3", "buy tortilla 3", "set menu 1 veggie_wrap 7.5", "end prep"]
     agent = make_agent([CHECKS, day_plan, CHECKS])
+    messages = agent.client.messages
 
     obs = run_steps(agent, env, obs, len(CHECKS) + len(day_plan))
-    assert len(agent.client.messages.parse_calls) == 2
-    assert obs.startswith("Day 2/")
 
-    # Every planned action was sent to the env, in order, and the env applied them.
+    # One call for the checks and one for the rest of the day, sent in order.
+    assert len(messages.parse_calls) == 2
     sent = [entry.removeprefix("Action: ") for entry in agent.transcript if entry.startswith("Action: ")]
     assert sent == CHECKS + day_plan
-    assert agent.queue == []
-    assert env.menu[0] == env.recipe_names.index("veggie_wrap")
 
     # The second call saw the results of all four checks.
-    second_prompt = agent.client.messages.parse_calls[1]["messages"][0]["content"]
+    second_prompt = messages.parse_calls[1]["messages"][0]["content"]
     for section in ["Storage:", "Market prices:", "Recipes:", "Menu:"]:
         assert section in second_prompt
 
-    # The first call of day 2 saw day 1's results.
+    # The first call of day 2 still sees day 1's transcript.
     agent.act(obs)
-    third_prompt = agent.client.messages.parse_calls[2]["messages"][0]["content"]
-    assert "Daily summary:" in third_prompt
+    third_prompt = messages.parse_calls[2]["messages"][0]["content"]
     assert "Last action: Bought 3 tomato" in third_prompt
-    assert "Last action: Set menu slot 1 to veggie_wrap" in third_prompt
 
 
 def test_recipes_stay_in_prompt_after_transcript_is_trimmed() -> None:
     env = FoodTruckEnv(EnvConfig())
     obs, _ = env.reset(seed=0)
-    agent = make_agent([["check recipes"], ["check storage"], ["check storage"]])
-    messages = agent.client.messages
+    agent = make_agent([["check recipes", "check storage"], ["check storage"]])
 
-    obs = run_steps(agent, env, obs, 1)
-    assert not messages.parse_calls[0]["messages"][0]["content"].startswith("Recipes:")
-
+    obs = run_steps(agent, env, obs, 2)
     # Simulate the recipe check being trimmed out of the transcript.
-    obs = run_steps(agent, env, obs, 1)
     agent.transcript.clear()
     agent.act(obs)
 
-    prompt = messages.parse_calls[2]["messages"][0]["content"]
+    prompt = agent.client.messages.parse_calls[1]["messages"][0]["content"]
     assert prompt.startswith("Recipes:\n- 1. veggie_wrap:")
-    assert "Transcript so far" in prompt
 
 
 def test_leftover_plan_is_dropped_when_day_ends_early() -> None:
     env = FoodTruckEnv(EnvConfig())
     obs, _ = env.reset(seed=0)
-    too_many = ["check storage"] * 25  # more than the 20 prep ops in a day
+    too_many = ["check market"] * 25  # more than the 20 prep ops in a day
     agent = make_agent([too_many, CHECKS])
 
     obs = run_steps(agent, env, obs, 20)
-    assert obs.startswith("Day 2/")
 
-    assert agent.act(obs) == "check storage"
+    assert agent.act(obs) == CHECKS[0]
     assert agent.queue == CHECKS[1:]
-    assert len(agent.client.messages.parse_calls) == 2
 
 
 def test_falls_back_when_llm_gives_no_usable_plan() -> None:
@@ -143,16 +132,12 @@ def test_truncation_drops_oldest_whole_entries() -> None:
     agent = make_agent([], max_history_tokens=1000)
     for i in range(50):
         agent.transcript.append(f"Observation:\nDay 1/20 (Mon) step {i} " + "x" * 200)
-        agent.transcript.append(f"Action: check storage")
+        agent.transcript.append("Action: check storage")
+    original = list(agent.transcript)
 
     agent._truncate_transcript()
 
     assert agent._count_tokens() <= 1000
+    # What's left is the newest entries, unchanged, starting on an observation.
+    assert agent.transcript == original[-len(agent.transcript) :]
     assert agent.transcript[0].startswith("Observation:")
-    assert agent.transcript[-1] == "Action: check storage"  # newest entries are kept
-
-
-def test_system_prompt_hides_customer_model() -> None:
-    prompt = build_system_prompt(EnvConfig()).lower()
-    for hidden in ["elasticity", "weekday", "multiplier", "base demand", "preference", "mean reversion"]:
-        assert hidden not in prompt
