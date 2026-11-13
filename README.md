@@ -137,11 +137,33 @@ You can also pass the key directly with `--api-key "<YOUR_KEY>"`.
 - The script prints an initial observation, then repeatedly prints `>>> <action>` and the resulting observation/reward.
 - Token counts come from the Anthropic token counting API (`client.messages.count_tokens`); there is no local tokenizer for Claude models.
 
+## Run the team agent (`agents/team_agent.py`)
+
+Same setup as the simple agent. Run it with:
+
+```bash
+uv run --env-file .env python -m agents.team_agent --seed 1
+```
+
+Flags: `--model`, `--seed`, `--max-steps`, and `--max-response-tokens` (per LLM call), with the same defaults as the simple agent.
+
+### How the team agent works
+
+Each day:
+
+1. The code runs `check storage`, `check market`, and `check menu`. `check recipes` runs only on day 1, and the result is reused after that.
+2. **Checker** (LLM): reads the check results and the log of past days, and writes a report with observations and ideas. It sends no commands.
+3. **Menu setter** (LLM): reads the report, the check results, the log, and the list of recipes not tried yet. Returns `set menu` / `clear menu` commands and notes for the buyer with expected orders per dish.
+4. **Buyer** (LLM): reads the menu decision and notes, the check results, the report, and the log. Returns `buy` / `trash` commands, limited to the prep ops left.
+5. The code sends the menu commands, then the buy commands, then `end prep`.
+
+Each agent can only send its own kind of command; others are dropped. The log of past days has, for each day, the starting menu, market prices, every command with its result, and the daily summary.
+
 ## Adding a new agent
 
 1. Create a file in `agents/`, e.g. `agents/my_agent.py`.
-2. Subclass `Agent` from `agents.base` and implement `act(observation) -> str`.
-3. Add a `main()` with the run loop (see `agents/simple_llm_agent.py`), then run it with `uv run python -m agents.my_agent`.
+2. Subclass `Agent` from `agents.base` and implement `act(observation) -> str`. `agents/base.py` also has shared helpers: `describe_game`, `clean_actions`, `get_day`, and `run_episode`.
+3. Add a `main()` that calls `run_episode` (see `agents/simple_llm_agent.py`), then run it with `uv run python -m agents.my_agent`.
 4. Add tests in `tests/`, e.g. `tests/test_my_agent.py`.
 
 ## Tests
